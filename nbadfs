@@ -1,0 +1,267 @@
+### Get stats - used to boost team by missing usage when a player is banned
+```{r revised-stats}
+seasons <- 2023
+Sys.setenv(VROOM_CONNECTION_SIZE=500072)
+player_stats <- bref_players_stats(seasons = seasons, tables = c("advanced", "totals"))
+```
+
+
+### Build my own optimizer
+```{r new-optimizer}
+
+testing <- F
+
+num_lineups <- 18
+range_of_outcomes <- 9 # higher = more diversity
+min_own_proj <- 0.03 # remove low-owned players from pool; 0.03 (3% ownership) seems appropriate for 6-game slate; 0.02 for 10-game
+combined_ownership <- 1.5 # set total lineup ownership sum minimum (1.00 == 100%); should be enough that you will get 5+ from the top-30 owned
+bans <- c("Eric Gordon", "Jalen Brunson") # Only add if players are OUT but still being included in build
+
+ban_usage <- player_stats %>%
+  filter(namePlayer %in% bans) %>%
+  group_by(slugTeamBREF) %>%
+  summarise(team_usg_available = mean(pctUSG)*(1+n()/10)) %>%
+  rename(Team = slugTeamBREF)
+
+
+print_lineups <- F
+pb <- txtProgressBar(0, num_lineups, style = 3)
+inc_proj_in_stack <- F # If T will increase projections for stacked teams; else just will require 3 players from selected stacks
+timeouts <- 0
+
+if(!testing){
+oprojections <- read_sheet("https://docs.google.com/spreadsheets/d/10Z3yco1exek-VHaYIsajjDvLn3F9xSZQ71LKN9bcVAM/edit#gid=218414798")
+
+
+## Apply linear model (defined in another chunk below) to players who did not receive a projection, but who are expected to carry ownership
+zero_proj <- oprojections %>%
+  filter(DKfpts_proj == 0  & `DK Own Proj` > min_own_proj)
+
+zero_proj$DKfpts_proj <- predict(fpts_lm, zero_proj)
+
+oprojections <- filter(oprojections, DKfpts_proj > 0)
+
+oprojections <- rbind(oprojections, zero_proj)
+
+}
+
+teams <- oprojections$Team %>%
+  unique()
+
+team_proj <- oprojections %>%
+  group_by(Team, Opp) %>%
+  summarise(fppp = mean(DKfpts_proj), ownpp = mean(`DK Own Proj`))
+opp_team_proj <- team_proj %>%
+  ungroup() %>%
+  select(-Team)
+opp_team_proj <-opp_team_proj%>%
+  rename(Team = Opp, Opp_fppp = fppp, Opp_ownpp = ownpp) %>%
+  group_by(Team)
+team_proj <- merge(team_proj, opp_team_proj) %>%
+  mutate(game_fppp = fppp + Opp_fppp)
+times_boosted <- as.data.frame(teams)
+times_boosted <- mutate(times_boosted, boosted = 0)
+
+rm(lineups)
+n = 1
+while(n <= num_lineups){
+  projections <- oprojections %>%
+    mutate(`DK Own Proj` = case_when(Team %in% ban_usage$Team ~ (`DK Own Proj` +.05), T ~ `DK Own Proj`)) %>%
+    filter(!player %in% bans & `DK Own Proj` > min_own_proj)
+  new_proj <- c()
+
+  
+  
+  game_stack <- team_proj %>%
+    select(Team, Opp, ownpp)
+  game_stack$game_stack <- runif(length(game_stack$Team), 0,game_stack$ownpp)
+  game_stack <- tail(game_stack[order(game_stack$game_stack),], 3)
+  
+  boost_teams <- c(game_stack$Team)%>%#, game_stack$Opp) %>%
+    unique()
+  times_boosted <- mutate(times_boosted, boosted = case_when(teams %in% boost_teams ~ boosted + 1, T ~ boosted))
+  for(i in 1:length(team_proj$Team)){
+    
+    team_usg_available <- 1
+    if(team_proj$Team[i] %in% ban_usage$Team){team_usg_available <-  ban_usage$team_usg_available[which(ban_usage$Team == team_proj$Team[i])]/5+1}
+    
+    # team_i <- projections %>%
+    #   filter(Team == team_proj$Team[i])
+    # team_i$new_proj <- rnorm(length(team_i$DKfpts_proj), team_i$`DK Own Proj`, 0.075)
+    # this_run_fppp <- mean(team_i$new_proj)
+    # team_i$new_proj <- team_i$new_proj * team_i$DKfpts_proj/this_run_fppp
+    # team_i <- select(team_i, player, new_proj)
+    # new_proj <- rbind(new_proj, team_i)
+
+    
+    team_i <- projections %>%
+      filter(Team == team_proj$Team[i])
+    team_i$new_proj <- runif(length(team_i$DKfpts_proj),team_i$DKfpts_proj-range_of_outcomes, team_i$DKfpts_proj+range_of_outcomes)
+      #rnorm(length(team_i$DKfpts_proj), team_i$DKfpts_proj, range_of_outcomes/2)
+    this_run_fppp <- mean(team_i$new_proj)
+    team_i$new_proj <- team_i$new_proj * team_proj$fppp[i]/this_run_fppp*team_usg_available
+    team_i <- select(team_i, player, new_proj)
+    new_proj <- rbind(new_proj, team_i)
+  }
+  projections <- merge(projections, new_proj, all.x = TRUE)
+  projections <- mutate(projections, DKfpts_proj = case_when(Team %in% boost_teams & inc_proj_in_stack ~ (new_proj* 1.1+3) , T ~ new_proj))
+  
+objective.in <- projections$DKfpts_proj #rnorm(length(projections$DKfpts_proj), projections$DKfpts_proj, projections$DKfpts_proj*.25)
+
+vsalary <- projections$Salary
+vpg <- c()
+vsg <- c()
+vsf <- c()
+vpf <- c()
+vc <- c()
+for(i in 1:length(projections$Position)){
+  pg <- as.numeric(grepl("PG",projections$Position[i], fixed = TRUE))
+  sg <- as.numeric(grepl("SG" ,projections$Position[i], fixed = TRUE))
+  sf <- as.numeric(grepl("SF" ,projections$Position[i], fixed = TRUE))
+  pf <- as.numeric(grepl("PF" ,projections$Position[i], fixed = TRUE))
+  c <- as.numeric(grepl("C" ,projections$Position[i], fixed = TRUE))
+  
+  vpg <- c(vpg, pg)
+  vsg <- c(vsg, sg)
+  vsf <- c(vsf, sf)
+  vpf <- c(vpf, pf)
+  vc <- c(vc, c)
+}
+vplaying <- as.numeric(projections$DKfpts_proj > 0)
+vown <- projections$`DK Own Proj`
+vg <- as.numeric(vpg | vsg)
+vf <- as.numeric(vsf | vpf)
+vboost <- as.numeric(projections$Team %in% boost_teams)
+vchalk <- as.numeric(projections$`DK Own Proj` >= .15)
+vlow <-  as.numeric(projections$`DK Own Proj` < .05)
+
+matrix_vector <- c(vsalary, vpg, vsg, vsf, vpf, vg, vf, vc, vc, vplaying, vown, vboost, vchalk, vlow)
+
+for(i in 1:length(teams)){
+  vteam <- as.numeric(projections$Team==teams[i])
+  matrix_vector <- c(matrix_vector, vteam)
+}
+
+
+
+const.mat = matrix(matrix_vector, nrow = length(matrix_vector)/length(projections$DKfpts_proj), byrow = TRUE)
+
+const.rhs = c(50000, 1, 1, 1, 1, 3, 3, 1, 2, 8, combined_ownership, 3, 3, 2)
+const.dir = c("<=", ">=", ">=", ">=",">=",">=", ">=", ">=","<=", "==", ">=", ">=", ">=", "<=")
+
+for(i in 1:length(teams)){
+  const.rhs[length(const.rhs)+1] = 3
+  const.dir[length(const.dir)+1] = "<="
+}
+
+
+objective.in[is.nan(objective.in)] <- 0
+objective.in[objective.in < 0] <- 0
+optimum = lp(direction = "max", objective.in, const.mat, const.dir, const.rhs, all.bin = TRUE)
+
+projections$optimum <- optimum$solution
+
+lineup <- filter(projections, optimum == 1)
+
+
+pg <- filter(lineup, grepl("PG",lineup$Position, fixed = TRUE))# & !grepl("SG",lineup$Position, fixed = TRUE)& ! grepl("SF",lineup$Position, fixed = TRUE) & !grepl("PF",lineup$Position, fixed = TRUE) &!grepl("C",lineup$Position, fixed = TRUE))
+sg <- filter(lineup, grepl("SG",lineup$Position, fixed = TRUE))#& !grepl("PG",lineup$Position, fixed = TRUE)& ! grepl("SF",lineup$Position, fixed = TRUE)& !grepl("PF",lineup$Position, fixed = TRUE) &!grepl("C",lineup$Position, fixed = TRUE))
+sf <- filter(lineup, grepl("SF",lineup$Position, fixed = TRUE))#& !grepl("PG",lineup$Position, fixed = TRUE)& ! grepl("SG",lineup$Position, fixed = TRUE)& !grepl("PF",lineup$Position, fixed = TRUE) &!grepl("C",lineup$Position, fixed = TRUE))
+pf <- filter(lineup, grepl("PF",lineup$Position, fixed = TRUE))#& !grepl("PG",lineup$Position, fixed = TRUE)& ! grepl("SG",lineup$Position, fixed = TRUE)& !grepl("SF",lineup$Position, fixed = TRUE) &!grepl("C",lineup$Position, fixed = TRUE))
+c <- filter(lineup, grepl("C",lineup$Position, fixed = TRUE))#& !grepl("PG",lineup$Position, fixed = TRUE)& ! grepl("SG",lineup$Position, fixed = TRUE)& !grepl("PF",lineup$Position, fixed = TRUE) &!grepl("SF",lineup$Position, fixed = TRUE))
+g <- filter(lineup, grepl("G",lineup$Position, fixed = TRUE))#&!grepl("F",lineup$Position, fixed = TRUE)&!grepl("C",lineup$Position, fixed = TRUE))
+f <- filter(lineup, grepl("F",lineup$Position, fixed = TRUE))#&!grepl("G",lineup$Position, fixed = TRUE)&!grepl("C",lineup$Position, fixed = TRUE))
+
+ordered_lineup <- c(pg$id[1], sg$id[1], sf$id[1], pf$id[1], c$id[1], g$id[1], f$id[1], lineup$id[1])
+
+tryCatch(
+  expr = {
+    withTimeout({
+while(length(unique(ordered_lineup)) < 8){
+
+  npg <- pg[order(rnorm(length(pg$id), 0, 1)),]
+  npg <- npg$id[1]
+  nsg <- sg[order(rnorm(length(sg$id), 0, 1)),]
+  nsg <- nsg %>%
+   filter(id != npg)
+  nsg <- nsg$id[1]
+  nsf <- sf[order(rnorm(length(sf$id), 0, 1)),] 
+  nsf <- nsf %>%
+    filter(id != npg & id != nsg)
+  nsf <- nsf$id[1]
+  npf <- pf[order(rnorm(length(pf$id), 0, 1)),] 
+  npf <- npf %>%
+    filter(id != npg & id != nsg & id != nsf)
+  npf <- npf$id[1]
+  nc <- c[order(rnorm(length(c$id), 0, 1)),] 
+  nc <- nc %>%
+    filter(id != npg & id != nsg & id != nsf & id != npf)
+  nc <- nc$id[1]
+  ng <- g[order(rnorm(length(g$id), 0, 1)),] 
+  ng <- ng %>%
+    filter(id != npg & id != nsg & id != nsf & id != npf & id != nc)
+  ng <- ng$id[1]
+  nf <- f[order(rnorm(length(f$id), 0, 1)),] 
+  nf <- nf %>%
+    filter(id != npg & id != nsg & id != nsf & id != npf & id != nc & id != ng)
+  nf <- nf$id[1]
+  nu <- lineup[order(rnorm(length(lineup$id), 0, 1)),] 
+  nu <- nu %>%
+    filter(id != npg & id != nsg & id != nsf & id != npf & id != nc & id != ng & id != nf)
+  nu <- nu$id[1]
+
+  
+  ordered_lineup <- c(npg, nsg, nsf, npf, nc, ng, nf, nu)
+
+}
+
+if(n == 1){
+  lineups <- ordered_lineup
+}else{
+  lineups <- data.frame(rbind(lineups, ordered_lineup))
+}
+
+lineups <- unique(lineups)
+
+if(print_lineups){
+cat("\nLineup", n, ": Boost teams (game stacked): ", boost_teams, " \n", lineup$player, "\n", lineup$Team, "\n")
+}
+
+if(n==1){n<-2}else{
+n <- length(lineups[,1])+1
+}
+    }, timeout = 0.85)
+  }, TimeoutException = function(ex) {
+    #cat("\nTimeout. Lineups built so far: ", n-1, "/", num_lineups," \n")
+  }
+  
+)
+setTxtProgressBar(pb, n-1)
+timeouts = timeouts + 1 
+}
+close(pb)
+cat("\n Number of timeouts: ", timeouts-num_lineups)
+
+colnames(lineups)<- c("PG", "SG", "SF", "PF", "C", "G", "F", "UTIL")
+
+write.csv(lineups, "C:/Users/jorda/Downloads/DKlineupsNBA.csv", row.names = FALSE)
+
+```
+
+
+### Lineup editor
+```{r lineup-editor}
+
+plineups <- read.csv("C:/Users/jorda/Downloads/DKEntriesNBA.csv")
+
+plineups <- filter(plineups, !is.na(Entry.ID) & !is.na(as.numeric(Entry.ID))) %>%
+  select(Entry.ID, Contest.Name, Contest.ID, Entry.Fee)
+
+newlineups <- read.csv("C:/Users/jorda/Downloads/DKLineupsNBA.csv")
+
+newlineups <- cbind(plineups, newlineups)
+colnames(newlineups) <- c("Entry ID", "Contest Name", "Contest ID", "Entry Fee", "PG", "SG", "SF", "PF", "C", "G", "F", "UTIL")
+
+write.csv(newlineups, "C:/Users/jorda/Downloads/DKEntriesNBA.csv", row.names = FALSE)
+
+```
