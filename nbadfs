@@ -1,5 +1,4 @@
 
-
 ```{r setup, include=FALSE}
 #knitr::opts_chunk$set(echo = TRUE)
 
@@ -456,14 +455,35 @@ optimum = lp(direction = "max", objective.in, const.mat, const.dir, const.rhs, a
 projections$optimum <- optimum$solution
 
 if(sum(projections$optimum == 9)){
-lineup <- filter(projections, optimum == 1) %>%
-  mutate(order = case_when(
+lineup <- filter(projections, optimum == 1)
+  
+  lineup <-  mutate( lineup, order = case_when(grepl("C" ,Position, fixed = TRUE)~ 5, T ~ 0))
+  lineup <-  mutate( lineup, order = case_when(grepl("PF"  ,Position, fixed = TRUE) ~ 4, T ~ order))
+  lineup <-  mutate( lineup, order = case_when(grepl("SF" ,Position, fixed = TRUE)~ 3, T ~ order))
+  lineup <-  mutate( lineup, order = case_when(grepl("SG"  ,Position, fixed = TRUE)~ 2, T ~ order))
+  lineup <-  mutate( lineup, order = case_when(grepl("PG"  ,Position, fixed = TRUE) ~ 1, T ~ order))
+                     
+                     
+lineup <- lineup[order(lineup$order, decreasing = FALSE),]     
 
-  ))
+ordered_lineup <- lineup$FDid
 
 
-ordered_lineup <- c(pg$id[1], sg$id[1], sf$id[1], pf$id[1], c$id[1], g$id[1], f$id[1], lineup$id[1])
+if(n == 1){
+  lineups <- ordered_lineup
+}else{
+  lineups <- data.frame(rbind(lineups, ordered_lineup))
+}
 
+lineups <- unique(lineups)
+
+if(print_lineups){
+cat("\nLineup", n, ": Boost teams (game stacked): ", boost_teams, " \n", lineup$player, "\n", lineup$Team, "\n")
+}
+
+if(n==1){n<-2}else{
+n <- length(lineups[,1])+1
+}
 
 setTxtProgressBar(pb, n-1)
 }
@@ -472,7 +492,7 @@ timeouts = timeouts + 1
 close(pb)
 #cat("\n Number of timeouts: ", timeouts-num_lineups)
 
-colnames(lineups)<- c("PG", "SG", "SF", "PF", "C", "G", "F", "UTIL")
+colnames(lineups)<- c("PG", "PG","SG","SG", "SF", "SF", "PF", "PF", "C")
 
 write.csv(lineups, "C:/Users/jorda/Downloads/FDlineupsNBA.csv", row.names = FALSE)
 
