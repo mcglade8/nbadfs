@@ -1,8 +1,42 @@
+
+```{r setup, include=FALSE}
+#knitr::opts_chunk$set(echo = TRUE)
+
+library(nbastatR)
+library(future)
+# plan(multiprocess) 
+library(dplyr)
+library(tidyverse)
+library(ggplot2)
+library(coach)
+library(TTR)
+library(XML)
+library(RCurl)
+# library(rlist)
+library(lpSolve)
+library(googlesheets4)
+library(R.utils)
+
+
+# Error: The size of the connection buffer (131072) was not large enough
+# to fit a complete line:
+# * Increase it by setting `Sys.setenv("VROOM_CONNECTION_SIZE")`
+# 
+# Ran this when getting error: Sys.setenv(VROOM_CONNECTION_SIZE=500072)
+```
+
+
 ### Get stats - used to boost team by missing usage when a player is banned
 ```{r revised-stats}
 seasons <- 2023
 Sys.setenv(VROOM_CONNECTION_SIZE=500072)
 player_stats <- bref_players_stats(seasons = seasons, tables = c("advanced", "totals"))
+
+pred_fpts <- oprojections %>%
+ filter(DKfpts_proj> 0)
+fpts_lm <- lm(DKfpts_proj~Salary + `DK Own Proj`, data = pred_fpts)
+
+
 ```
 
 
@@ -11,11 +45,11 @@ player_stats <- bref_players_stats(seasons = seasons, tables = c("advanced", "to
 
 testing <- F
 
-num_lineups <- 18
+num_lineups <- 17
 range_of_outcomes <- 9 # higher = more diversity
 min_own_proj <- 0.03 # remove low-owned players from pool; 0.03 (3% ownership) seems appropriate for 6-game slate; 0.02 for 10-game
 combined_ownership <- 1.5 # set total lineup ownership sum minimum (1.00 == 100%); should be enough that you will get 5+ from the top-30 owned
-bans <- c("Eric Gordon", "Jalen Brunson") # Only add if players are OUT but still being included in build
+bans <- c("Kevin Huerter", "Malik Monk") # Only add if players are OUT but still being included in build
 
 ban_usage <- player_stats %>%
   filter(namePlayer %in% bans) %>%
