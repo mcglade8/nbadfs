@@ -306,7 +306,7 @@ write.csv(newlineups, "C:/Users/jorda/Downloads/DKEntriesNBA.csv", row.names = F
 
 testing <- F
 
-num_lineups <- 10
+num_lineups <- 13
 range_of_outcomes <- 9 # higher = more diversity
 min_own_proj <- 0.03 # remove low-owned players from pool; 0.03 (3% ownership) seems appropriate for 6-game slate; 0.02 for 10-game
 combined_ownership <- .7 # set total lineup ownership sum minimum (1.00 == 100%); should be enough that you will get 5+ from the top-30 owned
@@ -404,13 +404,17 @@ vsg <- as.numeric(grepl("SG" ,projections$Position, fixed = TRUE))
 vsf <- as.numeric(grepl("SF" ,projections$Position, fixed = TRUE))
 vpf <- as.numeric(grepl("PF" ,projections$Position, fixed = TRUE))
 vc <- as.numeric(grepl("C" ,projections$Position, fixed = TRUE))
+vonlyc <- as.numeric(grepl("C" ,projections$Position, fixed = TRUE) &! grepl("PF" ,projections$Position, fixed = TRUE))
 vplaying <- as.numeric(projections$FDfpts_proj > 0)
 vown <- projections$`FD Own Proj`
 vboost <- as.numeric(projections$Team %in% boost_teams)
 vchalk <- as.numeric(projections$`FD Own Proj` >= .15)
 vlow <-  as.numeric(projections$`FD Own Proj` < .05)
+vg <- as.numeric(vpg | vsg)
+vf <- as.numeric(vsf | vpf)
+vbigs <- as.numeric(vc | vpf)
 
-matrix_vector <- c(vsalary, vpg, vsg, vsf, vpf, vc,  vplaying, vown, vboost, vchalk, vlow,vpg, vsg, vsf, vpf, vc)
+matrix_vector <- c(vsalary, vpg, vsg, vsf, vpf, vc,  vplaying, vown, vboost, vchalk, vlow,vpg, vsg, vsf, vpf, vc, vonlyc, vg, vf, vbigs)
 
 for(i in 1:length(teams)){
   vteam <- as.numeric(projections$Team==teams[i])
@@ -421,8 +425,8 @@ for(i in 1:length(teams)){
 
 const.mat = matrix(matrix_vector, nrow = length(matrix_vector)/length(projections$FDfpts_proj), byrow = TRUE)
 
-const.rhs = c(60000,    2,    2,    2,    2,    1,    9, combined_ownership,    3,    3,   2, 4, 4, 4, 4, 3)
-const.dir = c( "<=", ">=", ">=", ">=", ">=", ">=", "==",               ">=", ">=", ">=", "<=", "<=", "<=", "<=", "<=", "<=")
+const.rhs = c(60000,    2,    2,    2,    2,    1,    9, combined_ownership,    3,    3,   2, 4, 4, 4, 4, 3, 1, 4, 4, 3)
+const.dir = c( "<=", ">=", ">=", ">=", ">=", ">=", "==",               ">=", ">=", ">=", "<=", "<=", "<=", "<=", "<=", "<=", "<=", ">=", ">=", ">=")
 
 for(i in 1:length(teams)){
   const.rhs[length(const.rhs)+1] = 3
@@ -441,10 +445,15 @@ rm(lineup)
 lineup <- filter(projections, optimum == 1)
   
   lineup <-  mutate( lineup, order = case_when(grepl("C" ,Position, fixed = TRUE)~ 5, T ~ 0))
-  lineup <-  mutate( lineup, order = case_when(grepl("PF"  ,Position, fixed = TRUE) ~ 4, T ~ order))
-  lineup <-  mutate( lineup, order = case_when(grepl("SF" ,Position, fixed = TRUE)~ 3, T ~ order))
-  lineup <-  mutate( lineup, order = case_when(grepl("SG"  ,Position, fixed = TRUE)~ 2, T ~ order))
-  lineup <-  mutate( lineup, order = case_when(grepl("PG"  ,Position, fixed = TRUE) ~ 1, T ~ order))
+  lineup <-  mutate( lineup, order = case_when(grepl("PF"  ,Position, fixed = TRUE) & grepl("C" ,Position, fixed = TRUE) ~ 4.5, T ~ order))
+  lineup <-  mutate( lineup, order = case_when(grepl("PF"  ,Position, fixed = TRUE) &!grepl("C" ,Position, fixed = TRUE) &!grepl("SF" ,Position, fixed = TRUE) ~ 4, T ~ order))
+  lineup <-  mutate( lineup, order = case_when(grepl("PF"  ,Position, fixed = TRUE) &grepl("SF" ,Position, fixed = TRUE) ~ 3.5, T ~ order))
+  lineup <-  mutate( lineup, order = case_when(grepl("SF" ,Position, fixed = TRUE) &!grepl("PF"  ,Position, fixed = TRUE) &!grepl("SG"  ,Position, fixed = TRUE)~3, T ~ order))
+  lineup <-  mutate( lineup, order = case_when(grepl("SF" ,Position, fixed = TRUE) &grepl("SG"  ,Position, fixed = TRUE)~2.5, T ~ order))
+  lineup <-  mutate( lineup, order = case_when(grepl("SG"  ,Position, fixed = TRUE)&!grepl("SF" ,Position, fixed = TRUE)&!grepl("PG"  ,Position, fixed = TRUE) ~ 2, T ~ order))
+  lineup <-  mutate( lineup, order = case_when(grepl("PG"  ,Position, fixed = TRUE)&grepl("SG"  ,Position, fixed = TRUE)~ 1.5, T ~ order))
+  lineup <-  mutate( lineup, order = case_when(grepl("PG"  ,Position, fixed = TRUE)&!grepl("SG"  ,Position, fixed = TRUE)~ 1, T ~ order))
+
                      
                      
 lineup <- lineup[order(lineup$order, decreasing = FALSE),]     
@@ -488,4 +497,23 @@ colnames(lineups)<- c("PG", "PG","SG","SG", "SF", "SF", "PF", "PF", "C")
 write.csv(lineups, "C:/Users/jorda/Downloads/FDlineupsNBA.csv", row.names = FALSE)
 
 ```
+
+
+### FD lineup editor
+```{r fd-lineup-editor}
+
+plineups <- read.csv("C:/Users/jorda/Downloads/FDEntriesNBA.csv")
+
+plineups <- filter(plineups, !is.na(entry_id) & !is.na(as.numeric(entry_id))) %>%
+  select(entry_id, contest_id,contest_name)
+
+newlineups <- read.csv("C:/Users/jorda/Downloads/FDLineupsNBA.csv")
+
+newlineups <- cbind(plineups, newlineups)
+colnames(newlineups) <- c("entry_id", "contest_id", "contest_name", "PG", "PG","SG","SG", "SF", "SF", "PF",  "PF","C")
+
+write.csv(newlineups, "C:/Users/jorda/Downloads/FDEntriesNBA.csv", row.names = FALSE)
+
+```
+
 
