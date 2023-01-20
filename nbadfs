@@ -1,5 +1,4 @@
 
-
 ```{r setup, include=FALSE}
 #knitr::opts_chunk$set(echo = TRUE)
 
@@ -46,11 +45,11 @@ fpts_lm <- lm(DKfpts_proj~Salary + `DK Own Proj`, data = pred_fpts)
 
 testing <- F
 
-num_lineups <- 20
+num_lineups <- 25
 range_of_outcomes <- 9 # higher = more diversity
 min_own_proj <- .03 # remove low-owned players from pool; 0.03 (3% ownership) seems appropriate for 6-game slate; 0.02 for 10-game
-combined_ownership <- 1.1 # set total lineup ownership sum minimum (1.00 == 100%); should be enough that you will get 5+ from the top-30 owned
-bans <- NULL#c("Ivaca Zubac", "Kevin Porter Jr.", "Domantas Sabonis") # Only add if players are OUT but still being included in build
+combined_ownership <- 1.4 # set total lineup ownership sum minimum (1.00 == 100%); should be enough that you will get 5+ from the top-30 owned
+bans <- c("Rudy Gobert") # Only add if players are OUT but still being included in build
 
 ban_usage <- player_stats %>%
   filter(namePlayer %in% bans) %>%
@@ -139,9 +138,9 @@ while(n <= num_lineups){
     new_proj <- rbind(new_proj, team_i)
   }
   projections <- merge(projections, new_proj, all.x = TRUE)
-  projections <- mutate(projections, DKfpts_proj = case_when(Team %in% boost_teams & inc_proj_in_stack ~ (new_proj* 1.1+3) , T ~ new_proj))
+  projections <- mutate(projections, DKfpts_proj = case_when(Team %in% boost_teams & inc_proj_in_stack ~ (new_proj* 1.1+3) , T ~ new_proj), sd = case_when(sd==0~ DKfpts_proj*.25, T~sd))
   
-objective.in <- rnorm(length(projections$DKfpts_proj), projections$DKfpts_proj, projections$DKfpts_proj*.25)#projections$DKfpts_proj #
+objective.in <- rnorm(length(projections$DKfpts_proj), projections$DKfpts_proj, projections$sd)#projections$DKfpts_proj #
 
 vsalary <- projections$Salary
 vpg <- c()
@@ -666,8 +665,12 @@ write.csv(lineups, "C:/Users/jorda/Downloads/NHALineups.csv", row.names = FALSE)
 plineups <- read.csv("C:/Users/jorda/Downloads/DKEntriesNBA.csv")[1:12] %>%
   filter(!is.na(Entry.ID))
 pb <- txtProgressBar(0, nrow(plineups), style = 3)
-oprojections <- read_sheet("https://docs.google.com/spreadsheets/d/10Z3yco1exek-VHaYIsajjDvLn3F9xSZQ71LKN9bcVAM/edit#gid=218414798")
+#oprojections <- read_sheet("https://docs.google.com/spreadsheets/d/10Z3yco1exek-VHaYIsajjDvLn3F9xSZQ71LKN9bcVAM/edit#gid=218414798")
 plineups <- filter(plineups, !is.na(as.numeric(Entry.ID)))
+players_to_adjust <- c("Saben Lee")
+new_projection <- c(25)
+
+
 
 num_lineups <- 0 #iterates through entries for while loop
 while(num_lineups < nrow(plineups)){
@@ -678,6 +681,15 @@ while(num_lineups < nrow(plineups)){
 # for testing purposes; we will import this going forward and uncomment above
 projections <- oprojections 
 projections$StartTime <- strptime(projections$StartTime, format='%Y-%m-%d %I:%M:%S%p EST')
+
+fix_projection <- projections %>%
+  filter(player %in% players_to_adjust)
+fix_projection$DKfpts_proj <- new_projection
+
+projections <- projections %>%
+  filter(!player %in% players_to_adjust)
+
+projections <- rbind(projections, fix_projection)
 
 current_time <- Sys.time()
 #current_time <- strptime("2023-01-19 09:30:00PM EST", format='%Y-%m-%d %I:%M:%S%p EST')
@@ -782,16 +794,25 @@ for(i in 1:length(projections$Position)){
   vf <- as.numeric(vsf | vpf)
 vplaying <- as.numeric(projections$DKfpts_proj > 0)
 vtime_restricted <- as.numeric(projections$StartTime < current_time)
-valready_in_lineup <- as.numeric(projections$id %in% keepers)
+valready_in_lineup <- as.numeric(projections$id %in% keepers | !vplaying)
+
+if(c_swap == 0){
+c_dir <- "==" 
+}else{
+  c_dir <- ">="
+}
 
 matrix_vector <- c(vsalary, vpg, vsg, vsf, vpf, vc, vg, vf, vplaying, vtime_restricted)
 
 const.mat = matrix(matrix_vector, nrow = length(matrix_vector)/nrow(projections), byrow = TRUE)
 
-const.dir <- c(      "<=",    ">=",    ">=",    ">=",    ">=",   ">=",   ">=",   ">=",   "==", "==")
+const.dir <- c(      "<=",    ">=",    ">=",    ">=",    ">=",  c_dir,   ">=",   ">=",   "==", "==")
 const.rhs <- c(max_salary, pg_swap, sg_swap, sf_swap, pf_swap, c_swap, g_swap, f_swap, u_swap,    0)
 
-objective.in <- rnorm(nrow(projections), mean = projections$DKfpts_proj, sd = projections$DKfpts_proj*.25)
+objective.in <- rnorm(nrow(projections), mean = projections$DKfpts_proj, sd = projections$sd)
+objective.in[is.na(objective.in)] <- 0
+objective.in[is.nan(objective.in)] <- 0
+objective.in[objective.in < 0] <- 0
 
 optimum = lp(direction = "max", objective.in, const.mat, const.dir, const.rhs, all.bin = TRUE)
 
@@ -807,7 +828,7 @@ if(length(players_kept$player) > 0){
 for(i in 1:nrow(players_kept)){
   players_kept$order[i] <- which(lineup_to_check == as.numeric(players_kept$id[i]))
 }
-}
+
 slots_available <- c(1:8) 
 slots_available <- which(!slots_available %in% players_kept$order)
 
@@ -839,7 +860,11 @@ new_swaps <- select(new_swaps, -lineup_options)
 swapped_lineup <- rbind(new_swaps, players_kept)
 swapped_lineup <- swapped_lineup[order(swapped_lineup$order, decreasing = FALSE),]
 swapped_lineup <- select(swapped_lineup, id)
-
+}else{
+  swapped_lineup <- players_kept
+  swapped_lineup <- swapped_lineup[order(swapped_lineup$order, decreasing = FALSE),]
+  swapped_lineup <- select(swapped_lineup, id)
+}
 
 if(num_lineups == 0){
   new_lineups <- swapped_lineup$id
@@ -868,4 +893,3 @@ colnames(new_lineups) <- c("Entry ID", "Contest Name", "Contest ID", "Entry Fee"
 write.csv(new_lineups, "C:/Users/jorda/Downloads/DKEntriesNBA.csv", row.names = FALSE)
 
 ```
-
