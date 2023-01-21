@@ -36,6 +36,7 @@ pred_fpts <- oprojections %>%
  filter(DKfpts_proj> 0)
 fpts_lm <- lm(DKfpts_proj~Salary + `DK Own Proj`, data = pred_fpts)
 
+write.csv(player_stats, "C:/Users/jorda/Downloads/StatsNBA.csv", row.names = FALSE)
 
 ```
 
@@ -45,11 +46,13 @@ fpts_lm <- lm(DKfpts_proj~Salary + `DK Own Proj`, data = pred_fpts)
 
 testing <- F
 
-num_lineups <- 25
+num_lineups <- 20
 range_of_outcomes <- 9 # higher = more diversity
 min_own_proj <- .03 # remove low-owned players from pool; 0.03 (3% ownership) seems appropriate for 6-game slate; 0.02 for 10-game
-combined_ownership <- 1.4 # set total lineup ownership sum minimum (1.00 == 100%); should be enough that you will get 5+ from the top-30 owned
-bans <- c("Rudy Gobert") # Only add if players are OUT but still being included in build
+combined_ownership <- 1.3 # set total lineup ownership sum minimum (1.00 == 100%); should be enough that you will get 5+ from the top-30 owned
+bans <- c("Naji Marshall", "Bogdan Bogdanovic", "Herbert Jones") # Only add if players are OUT but still being included in build
+players_to_adjust <- NULL#c("Saben Lee") # Add players here who need a manual input projection; check high owned guys who might get missed
+new_projection <- NULL#c(25) # List of manual input projections; sd will be 30% of this number, defined below
 
 ban_usage <- player_stats %>%
   filter(namePlayer %in% bans) %>%
@@ -66,6 +69,17 @@ timeouts <- 0
 if(!testing){
 oprojections <- read_sheet("https://docs.google.com/spreadsheets/d/10Z3yco1exek-VHaYIsajjDvLn3F9xSZQ71LKN9bcVAM/edit#gid=218414798")
 
+if(length(players_to_adjust)>0){
+fix_projection <- oprojections %>%
+  filter(player %in% players_to_adjust)
+fix_projection$DKfpts_proj <- new_projection
+fix_projection$sd <- .3*DKfpts_proj
+
+oprojections <- oprojections %>%
+  filter(!player %in% players_to_adjust)
+
+oprojections <- rbind(oprojections, fix_projection)
+}
 
 ## Apply linear model (defined in another chunk below) to players who did not receive a projection, but who are expected to carry ownership
 zero_proj <- oprojections %>%
@@ -664,12 +678,13 @@ write.csv(lineups, "C:/Users/jorda/Downloads/NHALineups.csv", row.names = FALSE)
 
 plineups <- read.csv("C:/Users/jorda/Downloads/DKEntriesNBA.csv")[1:12] %>%
   filter(!is.na(Entry.ID))
-pb <- txtProgressBar(0, nrow(plineups), style = 3)
 #oprojections <- read_sheet("https://docs.google.com/spreadsheets/d/10Z3yco1exek-VHaYIsajjDvLn3F9xSZQ71LKN9bcVAM/edit#gid=218414798")
 plineups <- filter(plineups, !is.na(as.numeric(Entry.ID)))
-players_to_adjust <- c("Saben Lee")
-new_projection <- c(25)
-
+pb <- txtProgressBar(0, nrow(plineups), style = 3)
+players_to_adjust <- NULL#c("Saben Lee")
+new_projection <- NULL# c(25)
+bans<- NULL#c()
+force_unique_lineups <- F # If builder is struggling, set to F; may get duplicate lineups but will iterate faster
 
 
 num_lineups <- 0 #iterates through entries for while loop
@@ -677,7 +692,9 @@ while(num_lineups < nrow(plineups)){
   tryCatch(
     expr = {
       withTimeout({
-  max_salary <- 50000
+  
+        
+        {max_salary <- 50000
 # for testing purposes; we will import this going forward and uncomment above
 projections <- oprojections 
 projections$StartTime <- strptime(projections$StartTime, format='%Y-%m-%d %I:%M:%S%p EST')
@@ -692,7 +709,7 @@ projections <- projections %>%
 projections <- rbind(projections, fix_projection)
 
 current_time <- Sys.time()
-#current_time <- strptime("2023-01-19 09:30:00PM EST", format='%Y-%m-%d %I:%M:%S%p EST')
+#current_time <- strptime("2023-01-20 08:30:00PM EST", format='%Y-%m-%d %I:%M:%S%p EST')
 
 lineup_to_check <- plineups[num_lineups+1,5:12]
 lineup_to_check <- gsub("[a-z]", "", lineup_to_check, ignore.case = TRUE)
@@ -794,7 +811,8 @@ for(i in 1:length(projections$Position)){
   vf <- as.numeric(vsf | vpf)
 vplaying <- as.numeric(projections$DKfpts_proj > 0)
 vtime_restricted <- as.numeric(projections$StartTime < current_time)
-valready_in_lineup <- as.numeric(projections$id %in% keepers | !vplaying)
+valready_in_lineup <- as.numeric(projections$id %in% keepers)
+vbans <- as.numeric(projections$DKfpts_proj <= 0 | projections$player %in% bans)
 
 if(c_swap == 0){
 c_dir <- "==" 
@@ -861,9 +879,8 @@ swapped_lineup <- rbind(new_swaps, players_kept)
 swapped_lineup <- swapped_lineup[order(swapped_lineup$order, decreasing = FALSE),]
 swapped_lineup <- select(swapped_lineup, id)
 }else{
-  swapped_lineup <- players_kept
-  swapped_lineup <- swapped_lineup[order(swapped_lineup$order, decreasing = FALSE),]
-  swapped_lineup <- select(swapped_lineup, id)
+  swapped_lineup <- as.data.frame(lineup_to_check)
+  colnames(swapped_lineup) <- c("id")
 }
 
 if(num_lineups == 0){
@@ -871,10 +888,12 @@ if(num_lineups == 0){
   num_lineups <- 1
 }else{
   new_lineups <- data.frame(rbind(new_lineups, swapped_lineup$id))
-  new_lineups <- unique(new_lineups)
+  
+  if(force_unique_lineups) new_lineups <- unique(new_lineups)
+  
   num_lineups <- nrow(new_lineups)
 }
-
+}
 
 }, timeout = .3)
       }, 
@@ -882,14 +901,14 @@ TimeoutException = function(ex) {})
 setTxtProgressBar(pb, num_lineups)
 
 }
-close(pb)
-
-plineups <- filter(plineups, !is.na(Entry.ID) & !is.na(as.numeric(Entry.ID))) %>%
-  select(Entry.ID, Contest.Name, Contest.ID, Entry.Fee)
-
-new_lineups <- cbind(plineups, new_lineups)
-colnames(new_lineups) <- c("Entry ID", "Contest Name", "Contest ID", "Entry Fee", "PG", "SG", "SF", "PF", "C", "G", "F", "UTIL")
-
-write.csv(new_lineups, "C:/Users/jorda/Downloads/DKEntriesNBA.csv", row.names = FALSE)
+# close(pb)
+# 
+# plineups <- filter(plineups, !is.na(Entry.ID) & !is.na(as.numeric(Entry.ID))) %>%
+#   select(Entry.ID, Contest.Name, Contest.ID, Entry.Fee)
+# 
+# new_lineups <- cbind(plineups, new_lineups)
+# colnames(new_lineups) <- c("Entry ID", "Contest Name", "Contest ID", "Entry Fee", "PG", "SG", "SF", "PF", "C", "G", "F", "UTIL")
+# 
+# write.csv(new_lineups, "C:/Users/jorda/Downloads/DKEntriesNBA.csv", row.names = FALSE)
 
 ```
